@@ -1,0 +1,109 @@
+%% speed test
+for k=1:20
+tic;                     
+clc;                     
+clear;
+workspace;               
+imtool close all;        
+pixelArea_mm = (3.45E-3)^2;     
+gridPix = 1024^2;
+gridArea = 38^2;
+PixMM = gridArea/gridPix;
+avObjSize = 13.4;
+avObjArea = ((avObjSize/2)^2)*pi;
+I=imread(['mnms_ringlightwarmwhitetest2_orange_28ms1.jpg']);      % read original image from camera
+pa = [552 211]';
+pb = [972 205]';
+pc = [999 624]';
+pd = [550 633]';
+pA = [0 0]'; 
+pB = [1024 0]';
+pC = [1024 1024]';
+pD = [0 1024]';
+
+pin = [pa pb pc pd];    
+pout = [pA pB pC pD];       
+H = fitgeotrans(pin',pout', 'projective');      
+[object, ref] = imwarp(I,H,'OutputView',imref2d([1024, 1024]));      
+ x =100;
+ y=100;
+white_val = impixel(object,x,y);
+L = chromadapt(object,white_val);    
+HSV = rgb2hsv(L);           
+Himage=double(HSV(:,:,1));        
+Simage=double(HSV(:,:,2));      
+Vimage=double(HSV(:,:,3));       
+greyImage = rgb2gray(L);                    
+threshImage = imbinarize(greyImage);        
+smallestAcceptableArea = 10000;
+SegmentMask = uint8(bwareaopen(threshImage, smallestAcceptableArea));
+structuringElement = strel('disk', 20);
+SegmentMask = imclose(SegmentMask, structuringElement);
+SegmentMask = imfill(logical(~SegmentMask), 'holes');
+SegmentMask = cast(SegmentMask, 'like', L); 
+
+RedMask = SegmentMask .* L(:,:,1);
+GreenMask = SegmentMask .* L(:,:,2);
+BlueMask = SegmentMask .* L(:,:,3);
+maskedRGBImage = cat(3, RedMask, GreenMask, BlueMask);
+[meanHSV, areas, numberOfBlobs] = MeasureBlobs(SegmentMask, Himage, Simage, Vimage);
+if numberOfBlobs > 0
+	fprintf(1, 'Object, Detected Area (Pixels), Detected Area (mm), Actual area (mm)\n');
+	for blobNumber = 1 : numberOfBlobs
+        blobArea(1,blobNumber) = areas(blobNumber);
+	end
+else
+	fprintf("No blobs of the specified color were found in the image");
+end
+[m,n] = max(blobArea);      
+fprintf(1, '#%5d  %14d          %6.2f            %6.2f         %6.2f       %6.2f     %6.2f\n  ', blobNumber, areas(n), ...
+PixMM*areas(n), avObjArea);
+H = meanHSV(n, 1)*360;
+S = meanHSV(n, 2)*100;
+V = meanHSV(n, 3)*255;
+sweet_colour = colour_detector(H,V,S);
+fprintf('\n Colour: '); disp(sweet_colour);
+detectionTime = toc;
+fprintf('Detection Time (s): ');disp(detectionTime);
+end
+function [meanHSV, areas, numberOfBlobs] = MeasureBlobs(maskImage, Himage, Simage, Vimage)
+	[labeledImage, numberOfBlobs] = bwlabel(maskImage, 8);     
+	if numberOfBlobs == 0
+		meanHSV = [0 0 0];
+		areas = 0;
+		return;
+	end
+
+	blobMeasurementsHue = regionprops(labeledImage, Himage, 'area', 'MeanIntensity');   
+	blobMeasurementsSat = regionprops(labeledImage, Simage, 'area', 'MeanIntensity');   
+	blobMeasurementsValue = regionprops(labeledImage, Vimage, 'area', 'MeanIntensity');   
+	meanHSV = zeros(numberOfBlobs, 3);  
+	meanHSV(:,1) = [blobMeasurementsHue.MeanIntensity]';
+	meanHSV(:,2) = [blobMeasurementsSat.MeanIntensity]';
+	meanHSV(:,3) = [blobMeasurementsValue.MeanIntensity]';
+	areas = zeros(numberOfBlobs, 3);  
+	areas(:,1) = [blobMeasurementsHue.Area]';
+	areas(:,2) = [blobMeasurementsSat.Area]';
+	areas(:,3) = [blobMeasurementsValue.Area]';
+end
+
+
+function [colour] = colour_detector(H,V,S)
+    if -1<H && H<36 && 140<V && V<200 && 40<S && S<100
+        colour = 'RED';
+    elseif 290<H && H<361 && 45<V       
+        colour = 'RED';
+    elseif 28<H && H<37 && 200<V
+        colour = 'ORANGE';
+    elseif 36<H && H<71 && 149<V 
+        colour = 'YELLOW';
+    elseif 70<H && H<176 && 45<V 
+        colour = 'GREEN';
+    elseif 175<H && H<249 && 45<V
+        colour = 'BLUE';
+    elseif -1<H && H<70 && V<150 && S<30       
+        colour = 'BROWN';
+    else
+        colour = 'UNKNOWN';
+    end
+end
