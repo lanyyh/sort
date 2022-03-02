@@ -1,0 +1,285 @@
+function process_image(filename)
+tic;                     % start timer
+%clc;                     % Clear command window.
+%clear;
+workspace;               % Make sure the workspace panel with all the variables is showing.
+imtool close all;        % Close all figures.
+
+fontSize = 8;           % set default font size for figures
+pixelArea_mm = (3.45E-3)^2;     % size of pixel for specific thorlabs cam
+gridPix = 1024^2;
+gridArea = 38^2;
+PixMM = gridArea/gridPix;
+avObjSize = 13.4;
+avObjArea = ((avObjSize/2)^2)*pi;
+
+I=imread(filename);      % read original image from camera
+subplot(3, 3, 1);
+imshow(I);
+title('Original Image', 'FontSize', fontSize);
+
+% These are the chosen points in the image
+% pa = [350 226]';
+% pb = [535 215]';
+% pc = [544 430]';
+% pd = [343 442]';
+% pa = [352 139]';
+% pb = [703 135]';
+% pc = [707 474]';
+% pd = [318 475]';
+pa = [552 211]';
+pb = [972 205]';
+pc = [999 624]';
+pd = [550 633]';
+% Reference Points for transform
+pA = [0 0]'; 
+pB = [1024 0]';
+pC = [1024 1024]';
+pD = [0 1024]';
+
+pin = [pa pb pc pd];    % 2xN matrix of inputs
+pout = [pA pB pC pD];       % 2xN matrix of output
+H = fitgeotrans(pin',pout', 'projective');      % performs a projective transfrom of the points
+[object, ref] = imwarp(I,H,'OutputView',imref2d([1024, 1024]));      % performs warp on image to correct for camera angle
+%figure(); imshow(object); hold on;     % displays transformed image 'object'
+subplot(3, 3, 2);
+imshow(object); hold on;
+title('Transformed Image', 'FontSize', fontSize);
+
+% x= 190;
+% y= 770;
+ x =100;
+ y=100;
+%x = 500;        % coordinates of reference white point in image
+%y = 815;
+plot(x,y,'g+', 'MarkerSize', 20);
+white_val = impixel(object,x,y);
+drawpoint('Position',[x y],'Color','w');
+hold off;
+L = chromadapt(object,white_val);    % corrects for warm LED
+subplot(3, 3, 3);
+imshow(L);                      % display colour corrected (cc) image
+title('Colour Corrected Image', 'FontSize', fontSize);
+
+HSV = rgb2hsv(L);           % convert from RGB to HSV colour space
+Himage=double(HSV(:,:,1));        % hue value of cc image
+Simage=double(HSV(:,:,2));      % saturation value of cc image
+Vimage=double(HSV(:,:,3));       % value
+M = [Himage;Simage;Vimage];
+
+greyImage = rgb2gray(L);                    % converts image from rgb to greyscale
+threshImage = imbinarize(greyImage);        % Applies Otsu's method for thresholding to cc greyscale image
+subplot(3, 3, 4);
+imshow(threshImage);
+title('Otsu''s Thresholding Method', 'FontSize', fontSize);
+smallestAcceptableArea = 10000;
+SegmentMask = uint8(bwareaopen(threshImage, smallestAcceptableArea));
+subplot(3, 3, 5);
+imshow(SegmentMask, []);
+title('Small Objects removed using bwareaopen()', 'FontSize', fontSize);
+structuringElement = strel('disk', 20);
+SegmentMask = imclose(SegmentMask, structuringElement);
+subplot(3, 3, 6);
+imshow(SegmentMask, []);
+title('Smooth Image', 'FontSize', fontSize);  % closing (dilation follwoed by erosion)
+SegmentMask = imfill(logical(~SegmentMask), 'holes');
+%SegmentMask = imfill((SegmentMask), 'holes');
+subplot(3, 3, 7);
+imshow(SegmentMask, []);
+title('Holes filled', 'FontSize', fontSize);
+
+% SegementMask is logical array
+% convert the type of SegmentMask to the same data type as cc image, L
+SegmentMask = cast(SegmentMask, 'like', L); 
+% Use the colored object mask to mask out the colored-only portions of the rgb image
+RedMask = SegmentMask .* L(:,:,1);
+GreenMask = SegmentMask .* L(:,:,2);
+BlueMask = SegmentMask .* L(:,:,3);
+% Concatenate the masked color bands to form the rgb image.
+maskedRGBImage = cat(3, RedMask, GreenMask, BlueMask);
+% Show the masked off, original image.
+subplot(3, 3, 8);
+imshow(maskedRGBImage);
+caption = sprintf('Masked Image with Object Detected');
+title(caption, 'FontSize', fontSize);
+
+% Measure the mean HSV and area of all the detected blobs.
+[meanHSV, areas, numberOfBlobs] = MeasureBlobs(SegmentMask, Himage, Simage, Vimage);
+if numberOfBlobs > 0
+	fprintf(1, '\n----------------------------------------------\n');
+	fprintf(1, 'Object, Detected Area (Pixels), Detected Area (mm), Actual area (mm), Mean H, Mean S, Mean V\n');
+	fprintf(1, '----------------------------------------------\n');
+	for blobNumber = 1 : numberOfBlobs
+        blobArea(1,blobNumber) = areas(blobNumber);
+%             [m,n] = max(blobArea);        % added
+% 			fprintf(1, '#%5d, %14d, %6.2f, %6.2f, %6.2f, %6.2f\n, ', blobNumber, areas(blobNumber), ...
+% 				pixelArea_mm*areas(blobNumber), meanHSV(blobNumber, 1), meanHSV(blobNumber, 2), meanHSV(blobNumber, 3));
+	end
+else
+	% Alert user that no colored blobs were found.
+	fprintf("No blobs of the specified color were found in the image");
+end
+[m,n] = max(blobArea);      % finds number of blob with largest area
+fprintf(1, '#%5d  %14d          %6.2f            %6.2f         %6.2f       %6.2f     %6.2f\n  ', blobNumber, areas(n), ...
+PixMM*areas(n), avObjArea, meanHSV(n, 1), meanHSV(n, 2), meanHSV(n, 3));
+
+
+
+% disp(meanHSV(blobNumber, 1)*360);
+% disp(meanHSV(blobNumber, 2)*100);
+% disp(meanHSV(blobNumber, 3)*255);
+% 
+% H = meanHSV(blobNumber, 1)*360;
+% S = meanHSV(blobNumber, 2)*100;
+% V = meanHSV(blobNumber, 3)*255;
+
+figure; % create new figure
+% Display the hue image.
+	subplot(3, 3, 1);
+	h1 = imshow(Himage);
+	title('Hue Image', 'FontSize', fontSize);
+% Set up an infor panel so you can mouse around and inspect the hue values.
+	hHuePI = impixelinfo(h1);
+	set(hHuePI, 'Units', 'Normalized', 'Position',[.34 .69 .15 .02]);
+	
+% Display the saturation image.
+	h2 = subplot(3, 3, 2);
+	imshow(Simage);
+	title('Saturation Image', 'FontSize', fontSize);
+	% Set up an infor panel so you can mouse around and inspect the saturation values.
+	hSatPI = impixelinfo(h2);
+	set(hSatPI, 'Units', 'Normalized', 'Position',[.54 .69 .15 .02]);
+	
+% Display the value image.
+	h3 = subplot(3, 3, 3);
+	imshow(Vimage);
+	title('Value Image', 'FontSize', fontSize);
+	% Set up an infor panel so you can mouse around and inspect the value values.
+	hValuePI = impixelinfo(h3);
+	set(hValuePI, 'Units', 'Normalized', 'Position',[.75 .69 .15 .02]);
+
+% Compute and plot the histogram of the "hue" band.
+	hHuePlot = subplot(3, 3, 4); 
+	[hueCounts, hueBinValues] = imhist(Himage); 
+	maxHueBinValue = find(hueCounts > 0, 1, 'last'); 
+	maxCountHue = max(hueCounts); 
+ 	bar(hueBinValues, hueCounts, 'r'); 
+%	area(hueBinValues, hueCounts, 'FaceColor', 'r'); 
+	grid on; 
+	xlabel('Hue Value'); 
+	ylabel('Pixel Count'); 
+	title('Histogram of Hue Image', 'FontSize', fontSize);
+	% Compute and plot the histogram of the "saturation" band.
+	hSaturationPlot = subplot(3, 3, 5); 
+	[saturationCounts, saturationBinValues] = imhist(Simage); 
+	maxSaturationBinValue = find(saturationCounts > 0, 1, 'last'); 
+	maxCountSaturation = max(saturationCounts); 
+ 	bar(saturationBinValues, saturationCounts, 'g', 'BarWidth', 0.95); 
+%	area(saturationBinValues, saturationCounts, 'FaceColor', 'g'); 
+	grid on; 
+	xlabel('Saturation Value'); 
+	ylabel('Pixel Count'); 
+	title('Histogram of Saturation Image', 'FontSize', fontSize);
+	% Compute and plot the histogram of the "value" band.
+	hValuePlot = subplot(3, 3, 6); 
+	[valueCounts, valueBinValues] = imhist(Vimage); 
+	maxValueBinValue = find(valueCounts > 0, 1, 'last'); 
+	maxCountValue = max(valueCounts); 
+ 	bar(valueBinValues, valueCounts, 'b'); 
+%	area(valueBinValues, valueCounts, 'FaceColor', 'b'); 
+	grid on; 
+	xlabel('Value Value'); 
+	ylabel('Pixel Count'); 
+	title('Histogram of Value Image', 'FontSize', fontSize);
+	% Set all axes to be the same width and height.
+	% This makes it easier to compare them.
+	maxCount = max([maxCountHue,  maxCountSaturation, maxCountValue]); 
+	axis([hHuePlot hSaturationPlot hValuePlot], [0 1 0 maxCount]); 
+	% Plot all 3 histograms in one plot.
+	subplot(3, 3, 7); 
+	%plot(hueBinValues, hueCounts, 'r', 'LineWidth', 2); 
+	grid on; 
+	xlabel('Values'); 
+	ylabel('Pixel Count'); 
+	hold on; 
+	%plot(saturationBinValues, saturationCounts, 'g', 'LineWidth', 2); 
+	%plot(valueBinValues, valueCounts, 'b', 'LineWidth', 2); 
+	title('Histogram of All Bands', 'FontSize', fontSize); 
+	maxGrayLevel = max([maxHueBinValue, maxSaturationBinValue, maxValueBinValue]); % Just for our information....
+	% Make x-axis to just the max gray level on the bright end. 
+	xlim([0 1]); 
+
+% disp(meanHSV(n, 1)*360);        % calculates values for just the largest blob #n
+% disp(meanHSV(n, 2)*100);
+% disp(meanHSV(n, 3)*255);
+
+H = meanHSV(n, 1)*360;
+S = meanHSV(n, 2)*100;
+V = meanHSV(n, 3)*255;
+
+sweet_colour = colour_detector(H,V,S);
+fprintf('\n');
+fprintf('Colour: '); disp(sweet_colour);
+fprintf('\n');
+fprintf('Hue: '); disp(H);
+fprintf('Saturation: ');disp(S);
+fprintf('Value: '); disp(V);
+
+detectionTime = toc;
+fprintf('Detection Time (s): ');disp(detectionTime);
+
+function [meanHSV, areas, numberOfBlobs] = MeasureBlobs(maskImage, Himage, Simage, Vimage)
+	[labeledImage, numberOfBlobs] = bwlabel(maskImage, 8);     % Label each blob so we can make measurements of it
+	if numberOfBlobs == 0
+		% Didn't detect any blobs of the specified color in this image.
+		meanHSV = [0 0 0];
+		areas = 0;
+		return;
+	end
+	% Get all the blob properties
+	blobMeasurementsHue = regionprops(labeledImage, Himage, 'area', 'MeanIntensity');   
+	blobMeasurementsSat = regionprops(labeledImage, Simage, 'area', 'MeanIntensity');   
+	blobMeasurementsValue = regionprops(labeledImage, Vimage, 'area', 'MeanIntensity');   
+	
+	meanHSV = zeros(numberOfBlobs, 3);  % One row for each blob.  One column for each color.
+	meanHSV(:,1) = [blobMeasurementsHue.MeanIntensity]';
+	meanHSV(:,2) = [blobMeasurementsSat.MeanIntensity]';
+	meanHSV(:,3) = [blobMeasurementsValue.MeanIntensity]';
+	
+	% Now assign the areas.
+	areas = zeros(numberOfBlobs, 3);  % One row for each blob.  One column for each color.
+	areas(:,1) = [blobMeasurementsHue.Area]';
+	areas(:,2) = [blobMeasurementsSat.Area]';
+	areas(:,3) = [blobMeasurementsValue.Area]';
+end
+
+
+function [colour] = colour_detector(H,V,S)
+    if -1<H && H<36 && 140<V && V<200 && 40<S && S<100
+%         fprintf('RED')  
+        colour = 'RED';
+    elseif 290<H && H<361 && 45<V       % changed to incorporate pink because we dont need to detect pink
+%         fprintf('RED') 
+        colour = 'RED';
+    elseif 28<H && H<37 && 200<V
+%         fprintf('ORANGE')
+        colour = 'ORANGE';
+    elseif 36<H && H<71 && 149<V %&& 100<S
+%         fprintf('YELLOW')
+        colour = 'YELLOW';
+    elseif 70<H && H<176 && 45<V %&& 90<S
+%         fprintf('GREEN')
+        colour = 'GREEN';
+    %elseif 198<H && H<249 && 45<V
+    elseif 175<H && H<249 && 45<V
+%         fprintf('BLUE')
+        colour = 'BLUE';
+    elseif -1<H && H<70 && V<150 && S<30       
+%         fprintf('BROWN')
+        colour = 'BROWN';
+    else
+%         fprintf('Colour unknown')
+        colour = 'UNKNOWN';
+    end
+end % colour_detector
+end
